@@ -1,9 +1,10 @@
-package server
+package main
 
 import (
 	"log"
 	"net"
 	"os"
+
 	"github.com/kingshuk7995/pktfs/server"
 )
 
