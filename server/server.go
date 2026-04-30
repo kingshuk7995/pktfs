@@ -1,7 +1,6 @@
 package server
 
 import (
-	"github.com/kingshuk7995/pktfs/utils"
 	"net"
 	"path/filepath"
 )
@@ -9,19 +8,39 @@ import (
 type Server struct {
 	Addr string
 	root string
-	lm   *utils.LockManager
+	lm   *LockManager
 }
 
-func New(addr, root string) *Server {
-	root = filepath.Clean(root)
+func New(addr, root string) (*Server, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Server{
 		Addr: addr,
-		root: root,
-		lm:   utils.NewLockManager(root),
+		root: absRoot,
+		lm:   NewLockManager(absRoot),
+	}, nil
+}
+
+func (s *Server) ListenAndServe() error {
+	ln, err := net.Listen("tcp", s.Addr)
+	if err != nil {
+		return err
+	}
+	defer ln.Close()
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			continue
+		}
+		go s.handle(conn)
 	}
 }
 
-func (s *Server) Handle(conn net.Conn) {
+func (s *Server) handle(conn net.Conn) {
 	session := NewSession(conn, s.root, s.lm)
 	session.Run()
 }

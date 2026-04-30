@@ -2,216 +2,234 @@ package client
 
 import (
 	"fmt"
-	"os"
+	"path/filepath"
+	"strings"
 
-	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 var (
-	docStyle     = lipgloss.NewStyle().Margin(1, 2)
-	titleStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Bold(true)
-	statusStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("241")).MarginTop(1).MarginLeft(2)
-	successStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).MarginTop(1).MarginLeft(2)
-	errorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).MarginTop(1).MarginLeft(2)
+	frameStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			Padding(1, 2)
+
+	titleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("205"))
+
+	okStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42"))
+
+	errStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196"))
+
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
 )
 
-type item struct {
-	FileInfo
-}
-
-func (i item) Title() string {
-	if i.Dir {
-		return "📁 " + i.Name
-	}
-	return "📄 " + i.Name
-}
-
-func (i item) Description() string {
-	if i.Dir {
-		return "Directory"
-	}
-	return fmt.Sprintf("%d bytes", i.Size)
-}
-
-func (i item) FilterValue() string { return i.Name }
-
 type model struct {
-	api           *API
-	list          list.Model
-	textInput     textinput.Model
-	cwd           string
-	statusMessage string
-	statusIsError bool
-	inputMode     bool
+	api   *API
+	input textinput.Model
+
+	lines []string
+	cwd   string
+
+	width  int
+	height int
 }
 
-func NewTUI(api *API) (*model, error) {
-	m := &model{
-		api: api,
-	}
-
+func NewShell(api *API) *model {
 	ti := textinput.New()
-	ti.Placeholder = "Enter local path to upload"
+	ti.Placeholder = "type help"
+	ti.Prompt = "> "
 	ti.Focus()
-	ti.CharLimit = 256
-	ti.Width = 50
-	m.textInput = ti
+	ti.CharLimit = 512
+	ti.Width = 80
 
-	err := m.refreshFiles()
-	return m, err
-}
-
-func (m *model) refreshFiles() error {
-	cwd, err := m.api.Pwd()
-	if err != nil {
-		return err
-	}
-	m.cwd = cwd
-
-	files, err := m.api.List()
-	if err != nil {
-		return err
+	m := &model{
+		api:   api,
+		input: ti,
+		lines: []string{},
+		cwd:   "/",
 	}
 
-	items := []list.Item{
-		item{FileInfo{Name: "..", Dir: true}},
+	if cwd, err := api.Pwd(); err == nil && cwd != "" {
+		m.cwd = cwd
+		m.lines = append(m.lines, "connected: "+cwd)
+	} else if err != nil {
+		m.lines = append(m.lines, "connected, but failed to read pwd: "+err.Error())
 	}
-	for _, f := range files {
-		items = append(items, item{f})
-	}
 
-	delegate := list.NewDefaultDelegate()
-
-	m.list = list.New(items, delegate, 50, 20)
-	m.list.Title = "PKTFS: " + m.cwd
-
-	return nil
+	return m
 }
 
 func (m *model) Init() tea.Cmd {
 	return textinput.Blink
 }
 
-func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		if m.inputMode {
-			switch msg.Type {
-			case tea.KeyEnter:
-				m.inputMode = false
-				localObj := m.textInput.Value()
-				if localObj != "" {
-					info, err := os.Stat(localObj)
-					if err != nil {
-						m.setStatus("Error: "+err.Error(), true)
-					} else if info.IsDir() {
-						m.setStatus("Cannot upload directory", true)
-					} else {
-						remoteObj := info.Name()
-						err = m.api.Put(localObj, remoteObj)
-						if err != nil {
-							m.setStatus("Upload failed: "+err.Error(), true)
-						} else {
-							m.setStatus("Uploaded "+remoteObj+" successfully!", false)
-							m.refreshFiles()
-						}
-					}
-				}
-				return m, nil
-			case tea.KeyEsc:
-				m.inputMode = false
-				return m, nil
-			}
-
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
-		}
-
-		if m.list.FilterState() == list.Filtering {
-			break
-		}
-
-		switch msg.String() {
-		case "ctrl+c", "q":
-			m.api.Quit()
-			return m, tea.Quit
-		case "u":
-			m.inputMode = true
-			m.textInput.SetValue("")
-			return m, nil
-		case "r":
-			if err := m.refreshFiles(); err != nil {
-				m.setStatus("Refresh failed: "+err.Error(), true)
-			} else {
-				m.setStatus("Refreshed directory contents", false)
-			}
-			return m, nil
-		case "enter":
-			i, ok := m.list.SelectedItem().(item)
-			if ok {
-				if i.Dir {
-					err := m.api.Cd(i.Name)
-					if err != nil {
-						m.setStatus("CD failed: "+err.Error(), true)
-					} else {
-						m.refreshFiles()
-						m.setStatus("Changed directory", false)
-					}
-				} else {
-					m.setStatus("Downloading...", false)
-					err := m.api.Get(i.Name, i.Name)
-					if err != nil {
-						m.setStatus("Download failed: "+err.Error(), true)
-					} else {
-						m.setStatus("Downloaded "+i.Name+" successfully!", false)
-					}
-				}
-			}
-			return m, nil
-		}
-	case tea.WindowSizeMsg:
-		h, v := docStyle.GetFrameSize()
-		m.list.SetSize(msg.Width-h, msg.Height-v-4)
+func (m *model) appendLine(s string) {
+	m.lines = append(m.lines, s)
+	if len(m.lines) > 200 {
+		m.lines = m.lines[len(m.lines)-200:]
 	}
-
-	var cmd tea.Cmd
-	if !m.inputMode {
-		m.list, cmd = m.list.Update(msg)
-	}
-	return m, cmd
 }
 
-func (m *model) setStatus(msg string, isError bool) {
-	m.statusMessage = msg
-	m.statusIsError = isError
+func (m *model) runCommand(cmd string) tea.Cmd {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return nil
+	}
+
+	m.appendLine(m.input.Prompt + cmd)
+
+	parts := strings.Fields(cmd)
+	switch strings.ToLower(parts[0]) {
+	case "help":
+		m.appendLine("pwd | ls | cd <dir> | get <remote> [local] | put <local> [remote] | clear | quit")
+
+	case "pwd":
+		cwd, err := m.api.Pwd()
+		if err != nil {
+			m.appendLine("error: " + err.Error())
+		} else {
+			m.cwd = cwd
+			m.appendLine(cwd)
+		}
+
+	case "ls":
+		files, err := m.api.List()
+		if err != nil {
+			m.appendLine("error: " + err.Error())
+			break
+		}
+		for _, f := range files {
+			if f.Dir {
+				m.appendLine("DIR  " + f.Name)
+			} else {
+				m.appendLine(fmt.Sprintf("FILE %s (%d bytes)", f.Name, f.Size))
+			}
+		}
+
+	case "cd":
+		if len(parts) < 2 {
+			m.appendLine("error: missing path")
+			break
+		}
+		if err := m.api.Cd(parts[1]); err != nil {
+			m.appendLine("error: " + err.Error())
+			break
+		}
+		cwd, err := m.api.Pwd()
+		if err == nil {
+			m.cwd = cwd
+		}
+		m.appendLine("cwd: " + m.cwd)
+
+	case "get":
+		if len(parts) < 2 {
+			m.appendLine("error: missing remote file")
+			break
+		}
+		remote := parts[1]
+		local := filepath.Base(remote)
+		if len(parts) >= 3 {
+			local = parts[2]
+		}
+		if err := m.api.Get(remote, local); err != nil {
+			m.appendLine("error: " + err.Error())
+		} else {
+			m.appendLine("downloaded: " + local)
+		}
+
+	case "put":
+		if len(parts) < 2 {
+			m.appendLine("error: missing local file")
+			break
+		}
+		local := parts[1]
+		remote := filepath.Base(local)
+		if len(parts) >= 3 {
+			remote = parts[2]
+		}
+		if err := m.api.Put(local, remote); err != nil {
+			m.appendLine("error: " + err.Error())
+		} else {
+			m.appendLine("uploaded: " + remote)
+		}
+
+	case "clear":
+		m.lines = nil
+
+	case "quit", "exit":
+		m.api.Quit()
+		return tea.Quit
+
+	default:
+		m.appendLine("error: unknown command")
+	}
+
+	return nil
+}
+
+func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		m.input.Width = max(20, msg.Width-8)
+		return m, nil
+
+	case tea.KeyMsg:
+		switch msg.Type {
+		case tea.KeyCtrlC:
+			m.api.Quit()
+			return m, tea.Quit
+		case tea.KeyEnter:
+			cmd := m.input.Value()
+			m.input.SetValue("")
+			return m, m.runCommand(cmd)
+		}
+
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
+
+	return m, nil
 }
 
 func (m *model) View() string {
-	var s string
-
-	if m.inputMode {
-		s = fmt.Sprintf(
-			"Upload File to Server\n\n%s\n\n(press Enter to submit, Esc to cancel)\n",
-			m.textInput.View(),
-		)
-		s = docStyle.Render(s)
-	} else {
-		s = docStyle.Render(m.list.View())
+	header := titleStyle.Render("pktfs")
+	if m.cwd != "" {
+		header += " " + dimStyle.Render("["+m.cwd+"]")
 	}
 
-	if m.statusMessage != "" {
-		style := successStyle
-		if m.statusIsError {
-			style = errorStyle
-		}
-		s += "\n" + style.Render(m.statusMessage)
-	} else if !m.inputMode {
-		s += "\n" + statusStyle.Render("Commands: [u]pload [r]efresh [q]uit [enter] open/download [/] filter")
+	body := strings.Join(m.tail(18), "\n")
+	if body == "" {
+		body = dimStyle.Render("type help")
 	}
 
-	return s
+	view := fmt.Sprintf("%s\n\n%s\n\n%s",
+		header,
+		body,
+		m.input.View(),
+	)
+
+	return frameStyle.Width(max(40, m.width-4)).Render(view)
+}
+
+func (m *model) tail(n int) []string {
+	if len(m.lines) <= n {
+		return m.lines
+	}
+	return m.lines[len(m.lines)-n:]
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

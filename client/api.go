@@ -27,7 +27,9 @@ func ConnectAPI(addr string) (*API, error) {
 }
 
 func (a *API) Close() {
-	a.conn.Close()
+	if a.conn != nil {
+		_ = a.conn.Close()
+	}
 }
 
 func (a *API) send(cmd string) error {
@@ -44,16 +46,20 @@ func (a *API) Pwd() (string, error) {
 	if err := a.send("PWD"); err != nil {
 		return "", err
 	}
+
 	line, err := a.readLine()
 	if err != nil {
 		return "", err
 	}
+
 	if strings.HasPrefix(line, "OK ") {
 		return strings.TrimSpace(strings.TrimPrefix(line, "OK ")), nil
 	}
+
 	if line == "OK" {
 		return "/", nil
 	}
+
 	return "", fmt.Errorf("error: %s", line)
 }
 
@@ -74,22 +80,30 @@ func (a *API) List() ([]FileInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+
 		if line == "END" {
 			break
 		}
 		if strings.HasPrefix(line, "ERR") {
 			return nil, fmt.Errorf("error: %s", line)
 		}
+
 		parts := strings.Fields(line)
-		if len(parts) >= 2 {
-			if parts[0] == "DIR" {
-				files = append(files, FileInfo{Name: parts[1], Dir: true})
-			} else if parts[0] == "FILE" && len(parts) >= 3 {
+		if len(parts) < 2 {
+			continue
+		}
+
+		switch parts[0] {
+		case "DIR":
+			files = append(files, FileInfo{Name: parts[1], Dir: true})
+		case "FILE":
+			if len(parts) >= 3 {
 				size, _ := strconv.ParseInt(parts[2], 10, 64)
 				files = append(files, FileInfo{Name: parts[1], Size: size, Dir: false})
 			}
 		}
 	}
+
 	return files, nil
 }
 
@@ -97,13 +111,16 @@ func (a *API) Cd(dir string) error {
 	if err := a.send("CD " + dir); err != nil {
 		return err
 	}
+
 	line, err := a.readLine()
 	if err != nil {
 		return err
 	}
+
 	if strings.HasPrefix(line, "OK") {
 		return nil
 	}
+
 	return fmt.Errorf("error: %s", line)
 }
 
@@ -111,16 +128,25 @@ func (a *API) Get(remote, local string) error {
 	if err := a.send("GET " + remote); err != nil {
 		return err
 	}
+
 	line, err := a.readLine()
 	if err != nil {
 		return err
 	}
+
 	if !strings.HasPrefix(line, "OK") {
 		return fmt.Errorf("error: %s", line)
 	}
 
-	sizeStr := strings.Fields(line)[1]
-	size, _ := strconv.Atoi(sizeStr)
+	fields := strings.Fields(line)
+	if len(fields) < 2 {
+		return fmt.Errorf("invalid response: %s", line)
+	}
+
+	size, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil {
+		return err
+	}
 
 	file, err := os.Create(local)
 	if err != nil {
@@ -128,7 +154,7 @@ func (a *API) Get(remote, local string) error {
 	}
 	defer file.Close()
 
-	_, err = io.CopyN(file, a.reader, int64(size))
+	_, err = io.CopyN(file, a.reader, size)
 	return err
 }
 
@@ -144,8 +170,7 @@ func (a *API) Put(local, remote string) error {
 		return err
 	}
 
-	cmd := fmt.Sprintf("PUT %s %d", remote, info.Size())
-	if err := a.send(cmd); err != nil {
+	if err := a.send(fmt.Sprintf("PUT %s %d", remote, info.Size())); err != nil {
 		return err
 	}
 
@@ -173,6 +198,6 @@ func (a *API) Put(local, remote string) error {
 }
 
 func (a *API) Quit() {
-	a.send("QUIT")
+	_ = a.send("QUIT")
 	a.Close()
 }
