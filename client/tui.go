@@ -226,10 +226,3 @@ func (m *model) tail(n int) []string {
 	}
 	return m.lines[len(m.lines)-n:]
 }
-
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

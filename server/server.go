@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log"
 	"net"
 	"path/filepath"
 )
@@ -29,13 +30,16 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return err
 	}
+	log.Printf("server started\n\tADDRESS %s\n\tROOT %s", s.Addr, s.root)
 	defer ln.Close()
 
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			log.Printf("error: %s\n", err.Error())
 			continue
 		}
+		log.Printf("new connection: %s\n", conn.RemoteAddr().String())
 		go s.handle(conn)
 	}
 }
